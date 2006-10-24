@@ -87,9 +87,9 @@ print $@ if $@ ;
 
 		print <<ERR unless $ok ;
 RENDERED
-${$rendered}
+[${$rendered}]
 EXPECTED
-$test->{expected}
+[$test->{expected}]
 ------
 ERR
 

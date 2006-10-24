@@ -9,7 +9,7 @@ use File::Slurp ;
 
 use Data::Dumper ;
 
-our $VERSION = '0.01';
+our $VERSION = '0.02';
 
 my %opt_defaults = (
 
@@ -151,7 +151,7 @@ sub _render_chunk {
 	my( $self, $tmpl_ref, $data ) = @_ ;
 
 #print "T ref [$tmpl_ref] [$$tmpl_ref]\n" ;
-#print "CHUNK TMPL\n<$$tmpl_ref>\n" ;
+#print "CHUNK ref [$tmpl_ref] TMPL\n<$$tmpl_ref>\n" ;
 
 #print Dumper $data ;
 
@@ -174,31 +174,30 @@ sub _render_hash {
 
 	return $tmpl_ref unless keys %{$href} ;
 
-# print "T ref [$tmpl_ref] [$$tmpl_ref]\n" ;
-# print "HASH TMPL\n$$tmpl_ref\n" ;
-
 # we need a local copy of the template to render
 
-	my $rendered = ${$tmpl_ref} ;
+	my $rendered = ${$tmpl_ref}	 ;
+
 
 # recursively render all top level chunks in this chunk
 
 	$rendered =~ s{$self->{chunk_re}}
 		      {
 			# print "CHUNK $1\nBODY\n----\n<$2>\n\n------\n" ;
-			${$self->_render_chunk( \$2, $href->{$1} ) }}gex ;
+			${ $self->_render_chunk( \"$2", $href->{$1} ) }
+		      }gex ;
 
 # now render scalars
 
-#print "HASH TMPL\n<$rendered>\n" ;
-#print Dumper $href ;
+#print "HREF: ", Dumper $href ;
 
 	$rendered =~ s{$self->{scalar_re}}
 		      {
-			#print "SCALAR $1 VAL $href->{$1}\n" ;
-			 defined $href->{$1} ? $href->{$1} : '' }ge ;
+			 # print "SCALAR $1 VAL $href->{$1}\n" ;
+			 defined $href->{$1} ? $href->{$1} : ''
+		      }ge ;
 
-#print "HASH2 TMPL\n$$rendered\n" ;
+#print "HASH REND3\n<$rendered>\n" ;
 
 	return \$rendered ;
 }
@@ -211,7 +210,7 @@ sub _render_array {
 
 	my $rendered ;
 
-#print Dumper $aref ;
+#print "AREF: ", Dumper $aref ;
 
 	$rendered .= ${$self->_render_chunk( $tmpl_ref, $_ )} for @{$aref} ;
 

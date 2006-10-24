@@ -10,6 +10,7 @@ t/pod-coverage.t
 t/pod.t
 t/top.t
 t/scalar.t
+t/nested.t
 t/options.t
 t/include.t
 t/error.t
