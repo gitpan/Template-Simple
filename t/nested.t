@@ -10,7 +10,7 @@ use Data::Dumper ;
 my $tests = [
 
 	{
-		name	=> 'nested bug [- -]',
+		name	=> 'nested [- -]',
 		skip	=> 0,
 		opts	=> {
 			pre_delim  => qr/\[\-/,
@@ -69,7 +69,7 @@ TEMPLATE
 EXPECTED
 	},
 	{
-		name	=> 'nested bug',
+		name	=> 'nested',
 		skip	=> 0,
 		data	=> {
 			widgets => [
@@ -124,7 +124,7 @@ TEMPLATE
 EXPECTED
 	},
 	{
-		name	=> 'nested bug ,',
+		name	=> 'nested ,',
 		skip	=> 0,
 		opts	=> {
 		},
@@ -156,7 +156,7 @@ TEMPLATE
 EXPECTED
 	},
 	{
-		name	=> 'nested bug short',
+		name	=> 'nested short',
 		skip	=> 0,
 		data	=> {
 			widgets => [

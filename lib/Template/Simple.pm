@@ -1,15 +1,14 @@
-package Template::Simple;
+package Template::Simple ;
 
-use warnings;
-use strict;
+use warnings ;
+use strict ;
 
 use Carp ;
+use Data::Dumper ;
 use Scalar::Util qw( reftype ) ;
 use File::Slurp ;
 
-use Data::Dumper ;
-
-our $VERSION = '0.02';
+our $VERSION = '0.03';
 
 my %opt_defaults = (
 
@@ -18,7 +17,7 @@ my %opt_defaults = (
 	greedy_chunk	=> 0,
 #	upper_case	=> 0,
 #	lower_case	=> 0,
-	include_paths	=> [ qw( templates ) ],
+	search_dirs	=> [ qw( templates ) ],
 ) ;
 
 sub new {
@@ -34,6 +33,14 @@ sub new {
 		$self->{$name} = defined( $opts{$name} ) ? 
 				$opts{$name} : $default ;
 	}
+
+# support the old name 'include_paths' ;
+
+	$self->{search_dirs} = $self->{include_paths} if
+		$self->{include_paths} ;
+
+	croak "search_dirs is not an ARRAY reference" unless
+		ref $self->{search_dirs} eq 'ARRAY' ;
 
 # make up the regexes to parse the markup from templates
 
@@ -94,16 +101,207 @@ sub new {
 	return $self ;
 }
 
+sub compile {
 
+	my( $self, $template_name ) = @_ ;
+
+	my $tmpl_ref = eval {
+		 $self->_get_template( $template_name ) ;
+	} ;
+
+#print Dumper $self ;
+
+	croak "Template::Simple $@" if $@ ;
+
+	my $included = $self->_render_includes( $tmpl_ref ) ;
+
+# compile a copy of the template as it will be destroyed
+
+	my $code_body = $self->_compile_chunk( '', "${$included}", "\t" ) ;
+
+	my $source = <<CODE ;
+no warnings ;
+
+sub {
+	my( \$data ) = \@_ ;
+
+	my \$out ;
+
+	use Scalar::Util qw( reftype ) ;
+
+$code_body
+	return \\\$out ;
+}
+CODE
+
+#print $source ;
+
+	my $code_ref = eval $source ;
+
+#print $@ if $@ ;
+
+	$self->{compiled_cache}{$template_name} = $code_ref ;
+	$self->{source_cache}{$template_name} = $source ;
+}
+
+sub _compile_chunk {
+
+	my( $self, $chunk_name, $template, $indent ) = @_ ;
+
+	return '' unless length $template ;
+
+# generate a lookup in data for this chunk name (unless it is the top
+# level). this descends down the data tree during rendering
+
+	my $data_init = $chunk_name ? "\$data->{$chunk_name}" : '$data' ;
+
+	my $code = <<CODE ;
+${indent}my \@data = $data_init ;
+${indent}while( \@data ) {
+
+${indent}	my \$data = shift \@data ;
+${indent}	if ( reftype \$data eq 'ARRAY' ) {
+${indent}		push \@data, \@{\$data} ;
+${indent}		next ;
+${indent}	}
+
+CODE
+
+	$indent .= "\t" ;
+
+# loop all nested chunks and the text separating them
+
+	while( my( $parsed_name, $parsed_body ) =
+		$template =~ m{$self->{chunk_re}} ) {
+
+		my $chunk_left_index = $-[0] ;
+		my $chunk_right_index = $+[0] ;
+
+# get the pre-match text and compile its scalars and text. append to the code
+
+		$code .= $self->_compile_scalars(
+			substr( $template, 0, $chunk_left_index ), $indent ) ;
+
+# print "CHUNK: [$1] BODY [$2]\n\n" ;
+# print "TRUNC: [", substr( $template, 0, $chunk_right_index ), "]\n\n" ;
+# print "PRE: [", substr( $template, 0, $chunk_left_index ), "]\n\n" ;
+
+# chop off the pre-match and the chunk
+
+		substr( $template, 0, $chunk_right_index, '' ) ;
+
+# print "REMAIN: [$template]\n\n" ;
+
+# compile the nested chunk and append to the code
+
+		$code .= $self->_compile_chunk(
+				$parsed_name, $parsed_body, $indent
+		) ;
+	}
+
+# compile trailing text for scalars and append to the code
+
+	$code .= $self->_compile_scalars( $template, $indent ) ;
+
+	chop $indent ;
+
+# now we end the loop for this chunk
+	$code .= <<CODE ;
+$indent}
+CODE
+
+	return $code ;
+}
+
+sub _compile_scalars {
+
+	my( $self, $template, $indent ) = @_ ;
+
+# if the template is empty return no parts
+
+	return '' unless length $template ;
+
+	my @parts ;
+
+	while( $template =~ m{$self->{scalar_re}}g ) {
+
+# get the pre-match text before the scalar markup and generate code to
+# access the scalar
+
+		push( @parts,
+			_dump_text( substr( $template, 0, $-[0] ) ),
+			"\$data->{$1}"
+		) ;
+
+# truncate the matched text so the next match starts at begining of string
+
+		substr( $template, 0, $+[0], '' ) ;
+	}
+
+# keep any trailing text part
+
+	push @parts, _dump_text( $template ) ;
+
+	my $parts_code = join( "\n$indent.\n$indent", @parts ) ;
+
+	return <<CODE ;
+
+${indent}\$out .= reftype \$data ne 'HASH' ? \$data :
+${indent}$parts_code ;
+
+CODE
+}
+
+
+# internal sub to dump text for the template compiler.  the output is
+# a legal perl double quoted string without any leading text before
+# the opening " and no trailing newline or ;
+
+sub _dump_text {
+
+	my( $text ) = @_ ;
+
+	return unless length $text ;
+
+	local( $Data::Dumper::Useqq ) = 1 ;
+
+	my $dumped = Dumper $text ;
+
+	$dumped =~ s/^[^"]+// ;
+	$dumped =~ s/;\n$// ;
+
+	return $dumped ;
+}
+
+sub get_source {
+
+	my( $self, $template_name ) = @_ ;
+
+	return $self->{source_cache}{$template_name} ;
+}
 
 sub render {
 
-	my( $self, $template, $data ) = @_ ;
+	my( $self, $template_name, $data ) = @_ ;
 
-# make a copy if a scalar ref is passed as the template text is
-# modified in place
+	my $tmpl_ref = ref $template_name eq 'SCALAR' ? $template_name : '' ;
 
-	my $tmpl_ref = ref $template eq 'SCALAR' ? $template : \$template ;
+	unless( $tmpl_ref ) {
+
+# render with cached code and return if we precompiled this template
+
+		if ( my $compiled = $self->{compiled_cache}{$template_name} ) {
+
+			return $compiled->($data) ;
+		}
+
+# not compiled so try to get this template by name or
+# assume the template name are is the actual template
+
+		$tmpl_ref =
+			eval{ $self->_get_template( $template_name ) } ||
+			\$template_name ;
+	}
 
 	my $rendered = $self->_render_includes( $tmpl_ref ) ;
 
@@ -129,20 +327,19 @@ sub _render_includes {
 # loop until we can render no more include markups
 
 	1 while $rendered =~
-		 s{$self->{include_re}}
-		    { ${ $self->_get_template($1) }
-		  }e ;
+		 s{$self->{include_re}}{ ${ $self->_get_template($1) }}e ;
 
 	return \$rendered ;
 }
 
 my %renderers = (
 
+	SCALAR	=> sub { return $_[2] },
+	''	=> sub { return \$_[2] },
 	HASH	=> \&_render_hash,
 	ARRAY	=> \&_render_array,
 	CODE	=> \&_render_code,
 # if no ref then data is a scalar so replace the template with just the data
-	''	=> sub { \$_[2] },
 ) ;
 
 
@@ -163,7 +360,7 @@ sub _render_chunk {
 
 #print "EXP $renderer\nREF ", reftype $data, "\n" ;
 
-	die "unknown template data type '$data'\n" unless defined $renderer ;
+	croak "unknown template data type '$data'\n" unless defined $renderer ;
 
 	return $self->$renderer( $tmpl_ref, $data ) ;
 }
@@ -178,12 +375,13 @@ sub _render_hash {
 
 	my $rendered = ${$tmpl_ref}	 ;
 
-
 # recursively render all top level chunks in this chunk
 
 	$rendered =~ s{$self->{chunk_re}}
 		      {
 			# print "CHUNK $1\nBODY\n----\n<$2>\n\n------\n" ;
+#			print "CHUNK $1\nBODY\n----\n<$2>\n\n------\n" ;
+#			print "pre CHUNK [$`]\n" ;
 			${ $self->_render_chunk( \"$2", $href->{$1} ) }
 		      }gex ;
 
@@ -223,7 +421,7 @@ sub _render_code {
 
 	my $rendered = $cref->( $tmpl_ref ) ;
 
-	die <<DIE if ref $rendered ne 'SCALAR' ;
+	croak <<DIE if ref $rendered ne 'SCALAR' ;
 data callback to code didn't return a scalar or scalar reference
 DIE
 
@@ -238,11 +436,14 @@ sub add_templates {
 	return unless defined $tmpls ;
 
  	ref $tmpls eq 'HASH' or croak "templates argument is not a hash ref" ;
-	
-	@{ $self->{templates}}{ keys %{$tmpls} } =
+
+# copy all the templates from the arg hash and force the values to be
+# scalar refs
+
+	@{ $self->{tmpl_cache}}{ keys %{$tmpls} } =
 		map ref $_ eq 'SCALAR' ? \"${$_}" : \"$_", values %{$tmpls} ;
 
-#print Dumper $self->{templates} ;
+#print Dumper $self->{tmpl_cache} ;
 
 	return ;
 }
@@ -251,9 +452,19 @@ sub delete_templates {
 
 	my( $self, @names ) = @_ ;
 
-	@names = keys %{$self->{templates}} unless @names ;
+# delete all the cached stuff or just the names passed in
 
-	delete @{$self->{templates}}{ @names } ;
+	@names = keys %{$self->{tmpl_cache}} unless @names ;
+
+#print "NAMES @names\n" ;
+# clear out all the caches
+# TODO: reorg these into a hash per name
+
+	delete @{$self->{tmpl_cache}}{ @names } ;
+	delete @{$self->{compiled_cache}}{ @names } ;
+	delete @{$self->{source_cache}}{ @names } ;
+
+# also remove where we found it to force a fresh search
 
 	delete @{$self->{template_paths}}{ @names } ;
 
@@ -266,7 +477,7 @@ sub _get_template {
 
 #print "INC $tmpl_name\n" ;
 
-	my $tmpls = $self->{templates} ;
+	my $tmpls = $self->{tmpl_cache} ;
 
 # get the template from the cache and send it back if it was found there
 
@@ -285,11 +496,14 @@ sub _find_template {
 
 	my( $self, $tmpl_name ) = @_ ;
 
-	foreach my $dir ( @{$self->{include_paths}} ) {
+#print "FIND $tmpl_name\n" ;
+	foreach my $dir ( @{$self->{search_dirs}} ) {
 
 		my $tmpl_path = "$dir/$tmpl_name.tmpl" ;
 
 #print "PATH: $tmpl_path\n" ;
+
+		next if $tmpl_path =~ /\n/ ;
 		next unless -r $tmpl_path ;
 
 # cache the path to this template
@@ -298,11 +512,15 @@ sub _find_template {
 
 # slurp in the template file and return it as a scalar ref
 
-		return scalar read_file( $tmpl_path, scalar_ref => 1 ) ;
+#print "FOUND $tmpl_name\n" ;
+
+		return read_file( $tmpl_path, scalar_ref => 1 ) ;
 	}
 
-	die <<DIE ;
-can't find template '$tmpl_name' in '@{$self->{include_paths}}'
+#print "CAN'T FIND $tmpl_name\n" ;
+
+	croak <<DIE ;
+can't find template '$tmpl_name' in '@{$self->{search_dirs}}'
 DIE
 
 }
@@ -313,11 +531,11 @@ __END__
 
 =head1 NAME
 
-Template::Simple - A simple and fast template module
+Template::Simple - A simple and very fast template module
 
 =head1 VERSION
 
-Version 0.01
+Version 0.03
 
 =head1 SYNOPSIS
 
@@ -325,7 +543,10 @@ Version 0.01
 
     my $tmpl = Template::Simple->new();
 
-    my $template = <<TMPL ;
+  # here is a simple template store in a scalar
+  # the header and footer templates will be included from the cache or files.
+
+    my $template_text = <<TMPL ;
 [%INCLUDE header%]
 [%START row%]
 	[%first%] - [%second%]
@@ -333,8 +554,14 @@ Version 0.01
 [%INCLUDE footer%]
 TMPL
 
+  # this is data that will be used to render that template the keys
+  # are mapped to the chunk names (START & END markups) in the
+  # template the row is an array reference so multiple rows will be
+  # rendered usually the data tree is generated by code instead of
+  # being pure data.
+
     my $data = {
-	header_data	=> {
+	header	=> {
 		date	=> 'Jan 1, 2008',
 		author	=> 'Me, myself and I',
 	},
@@ -348,70 +575,45 @@ TMPL
 			second	=> 'row 2 value 2',
 		},
 	],
-	footer_data	=> {
+	footer	=> {
 		modified	=> 'Aug 31, 2006',
 	},
     } ;
 
-    my $rendered = $tmpl->render( $template, $data ) ;
+  # this call renders the template with the data tree
+
+    my $rendered = $tmpl->render( \$template_text, $data ) ;
+
+  # here we add the template to the cache and give it a name
+
+    $tmpl->add_template( demo => $template_text ) ;
+
+  # this compiles and then renders that template with the same data
+  # but is much faster
+
+    $tmpl->compile( 'demo' ) ;
+    my $rendered = $tmpl->render( 'demo', $data ) ;
+
 
 =head1 DESCRIPTION
 
-Template::Simple has these goals:
+Template::Simple is a very fast template rendering module with a
+simple markup. It can do almost any templating task and is extendable
+with user callbacks. It can render templates directly or compile them
+for more speed.
 
-=over 4
+=head1 CONSTRUCTOR
 
-=item * Support most common template operations
-
-It can recursively include other templates, replace tokens (scalars),
-recursively render nested chunks of text and render lists. By using
-simple idioms you can get conditional renderings.
-
-=item * Complete isolation of template from program code
-
-This is very important as template design can be done by different
-people than the program logic. It is rare that one person is well
-skilled in both template design and also programming.
-
-=item * Very simple template markup (only 4 markups)
-
-The only markups are C<INCLUDE>, C<START>, C<END> and C<token>. See
-MARKUP for more.
-
-=item * Easy to follow rendering rules
-
-Rendering of templates and chunks is driven from a data tree. The type
-of the data element used in an rendering controls how the rendering
-happens.  The data element can be a scalar or scalar reference or an
-array, hash or code reference.
-
-=item * Efficient template rendering
-
-Rendering is very simple and uses Perl's regular expressions
-efficiently. Because the markup is so simple less processing is needed
-than many other templaters. Precompiling templates is not supported
-yet but that optimization is on the TODO list.
-
-=item * Easy user extensions
-
-User code can be called during an rendering so you can do custom
-renderings and plugins. Closures can be used so the code can have its
-own private data for use in rendering its template chunk.
-
-=back
-
-=head2 new()
-
+=head2	new
+ 
 You create a Template::Simple by calling the class method new:
 
 	my $tmpl = Template::Simple->new() ;
 
 All the arguments to C<new()> are key/value options that change how
-the object will do renderings.
+the object will render templates.
 
-=over 4
-
-=item	pre_delim
+=head2	pre_delim
 
 This option sets the string or regex that is the starting delimiter
 for all markups. You can use a plain string or a qr// but you need to
@@ -424,7 +626,7 @@ chars. The default is qr/\[%/.
 
 	my $rendered = $tmpl->render( '<%FOO%]', 'bar' ) ;
 
-=item	post_delim
+=head2	post_delim
 
 This option sets the string or regex that is the ending delimiter
 for all markups. You can use a plain string or a qr// but you need to
@@ -437,26 +639,19 @@ chars. The default is qr/%]/.
 
 	my $rendered = $tmpl->render( '[%FOO%>', 'bar' ) ;
 
-=item	greedy_chunk
+=head2	greedy_chunk
 
 This boolean option will cause the regex that grabs a chunk of text
 between the C<START/END> markups to become greedy (.+). The default is
 a not-greedy grab of the chunk text. (UNTESTED)
 
-=item	templates
+=head2	templates
 
 This option lets you load templates directly into the cache of the
-Template::Simple object. This cache will be searched by the C<INCLUDE>
-markup which will be replaced by the template if found. The option
-value is a hash reference which has template names (the name in the
-C<INCLUDE> markup) for keys and their template text as their
-values. You can delete or clear templates from the object cache with
-the C<delete_template> method.
-
+Template::Simple object. See <TEMPLATE CACHE> for more on this.
 
 	my $tmpl = Template::Simple->new(
 		templates	=> {
-
 			foo	=> <<FOO,
 [%baz%] is a [%quux%]
 FOO
@@ -466,52 +661,79 @@ BAR
 		},
 	);
 
-	my $template = <<TMPL ;
-[%INCLUDE foo %]
-TMPL
+=head2	search_dirs, include_paths
 
-	my $rendered = $tmpl->render(
-		$template,
-		{
-			baz => 'blue',
-			quux => 'color,
-		}
+This option lets you set the directory paths to search for template
+files. Its value is an array reference with the paths. Its default is
+'templates'.
+
+	my $tmpl = Template::Simple->new(
+			search_dirs => [ qw(
+				templates
+				templates/deeper
+			) ],
 	) ;
 
-=item	include_paths
-
-Template::Simple can also load C<INCLUDE> templates from files. This
-option lets you set the directory paths to search for those
-files. Note that the template name in the C<INCLUDE> markup has the
-.tmpl suffix appended to it when searched for in one of these
-paths. The loaded file is cached inside the Template::Simple object
-along with any loaded by the C<templates> option.
-
-=back
+NOTE: This option was called C<include_paths> but since it is used to
+locate named templates as well as included ones, it was changed to
+C<search_dirs>. The older name C<include_paths> is still supported
+but new code should use C<search_dirs>.
 
 =head1 METHODS
 
 =head2 render
 
 This method is passed a template and a data tree and it renders it and
-returns a reference to the resulting string. The template argument can
-be a scalar or a scalar reference. The data tree argument can be any
-value allowed by Template::Simple when rendering a template. It can
-also be a blessed reference (Perl object) since
-C<Scalar::Util::reftype> is used instead of C<ref> to determine the
-data type.
+returns a reference to the resulting string.
+
+If the template argument is a scalar reference, then it is the
+template text to be rendered. A scalar template argument is first
+assumed to be a template name which is searched for in the template
+cache and the compiled template caches. If found in there it is used
+as the template. If not found there, it is searched for in the
+directories of the C<include_paths>. Finally if not found, it will be
+used as the template text.
+
+The data tree argument can be any value allowed by Template::Simple
+when rendering a template. It can also be a blessed reference (Perl
+object) since C<Scalar::Util::reftype> is used instead of C<ref> to
+determine the data type.
 
 Note that the author recommends against passing in an object as this
 breaks encapsulation and forces your object to be (most likely) a
 hash. It would be better to create a simple method that copies the
-object contents to a hash reference and pass that. But current
+object contents to a hash reference and pass that. But other current
 templaters allow passing in objects so that is supported here as well.
 
     my $rendered = $tmpl->render( $template, $data ) ;
 
+=head2 compile
+
+This method takes a template and compiles it to make it run much
+faster. Its only argument is a template name and that is used to
+locate the template in the object cache or it is loaded from a file
+(with the same search technique as regular rendering). The compiled
+template is stored in its own cache and can be rendered by a call to
+the render method and passing the name and the data tree.
+
+    $tmpl->compile( 'foo' ) ;
+    my $rendered = $tmpl->render( 'foo', $data ) ;
+
+There are a couple of restrictions to compiled templates. They don't
+support code references in the data tree (that may get supported in
+the future). Also since the include expansion happens one time during
+the compiling, any changes to the template or its includes will not be
+detected when rendering a compiled template. You need to re-compile a
+template to force it to use changed templates. Note that you may need
+to delete templates from the object cache (with the delete_templates
+method) to force them to be reloaded from files.
+
 =head2 add_templates
 
-This method adds templates to the object cache. It takes a list of template names and texts just like the C<templates> constructor option.
+This method adds templates to the object cache. It takes a list of
+template names and texts just like the C<templates> constructor
+option. These templates are located by name when compiling or
+rendering.
 
 	$tmpl->add_templates( 
 		{
@@ -523,12 +745,10 @@ This method adds templates to the object cache. It takes a list of template name
 =head2 delete_templates
 
 This method takes a list of template names and will delete them from
-the template cache in the object. If you pass in an empty list then
-all the templates will be deleted. This can be used when you know a
-template file has been updated and you want to get it loaded back into
-the cache. Note that you can delete templates that were loaded
-directly (via the C<templates> constructor option or the
-C<add_templates> method) or loaded from a file.
+the template cache in the object. If you pass no arguments then all
+the cached templates will be deleted. This can be used when you know
+a template file has been updated and you want to get it loaded back
+into the cache. 
 
     # this deletes only the foo and bar templates from the object cache
 
@@ -538,22 +758,43 @@ C<add_templates> method) or loaded from a file.
 
 	$tmpl->delete_templates() ;
 
-=head2 get_dependencies
+=head2 get_source
 
-This method render the only C<INCLUDE> markups of a template and it
-returns a list of the file paths that were found and loaded. It is
-meant to be used to build up a dependency list of included templates
-for a main template. Typically this can be called from a script (see
-TODO) that will do this for a set of main templates and will generate
-Makefile dependencies for them. Then you can regenerate rendered
-templates only when any of their included templates have changed. It
-takes a single argument of a template.
+	$tmpl->get_source( 'bar' ) ;
 
-UNKNOWN: will this require a clearing of the cache or will it do the
-right thing on its own? or will it use the file path cache?
+This method is passed a compiled template name and returns the
+generated Perl source for a compiled template. You can compile a
+template and paste the generated source (a single sub per template)
+into another program. The sub can be called and passed a data tree and
+return a rendered template. It saves the compile time for that
+template but it still needs to be compiled by Perl. This method is
+also useful for debugging the template compiler.
 
-	my @dependencies =
-		$tmpl->get_dependencies( '[%INCLUDE top_level%]' );
+=head1 TEMPLATE CACHE
+
+This cache is stored in the object and will be searched to find any
+template by name. It is initially loaded via the C<templates> option
+to new and more can be added with the C<add_templates> method. You can
+delete templates from the cache with the C<delete_templates>
+method. Compiled templates have their own cache in the
+module. Deleting a template also deletes it from the compiled cache.
+
+=head1 INCLUDE EXPANSION
+
+Before a template is either rendered or compiled it undergoes include
+expansion. All include markups are replaced by a templated located in
+the cache or from a file. Included templates can include other
+templates. This expansion keeps going until no more includes are
+found.
+
+=head1 LOCATING TEMPLATES 
+
+When a template needs to be loaded by name (when rendering, compiling
+or expanding includes) it is first searched for in the object cache
+(and the compiled cache for compiled templates). If not found there,
+the C<templates_paths> are searched for files with that name and a
+suffix of .tmpl. If a file is found, it used and also loaded into the
+template cache in the object with the searched for name as its key.
 
 =head1 MARKUP
 
@@ -583,16 +824,11 @@ name%]>. C<name> is a C<\w+> Perl word which is the name of this
 chunk. The whitespace between C<START/END> and C<name> is required and
 there is optional whitespace before C<START/END> and after the
 C<name>. C<START/END> are case insensitive but the C<name>'s case is
-kept. C<name> must match in the C<START/END> pair and it used as a key
-in a hash data rendering. Chunks are the primary way to markup
-templates for structures (sets of tokens), nesting (hashes of hashes),
-repeats (array references) and callbacks to user code. Chunks are only
-parsed out during hash data rendering so see Hash Data for more.
-
-The body of text between the C<START/END> markups is grabbed with a
-C<.+?> regular expression with the /s option enabled so it will match
-all characters. By default it will be a non-greedy grab but you can
-change that in the constructor by enabling the C<greedy_chunk> option.
+kept.  Chunks are the primary way to markup templates for structures
+(sets of tokens), nesting (hashes of hashes), repeats (array
+references) and callbacks to user code.  By default a chunk will be a
+non-greedy grab but you can change that in the constructor by enabling
+the C<greedy_chunk> option.
 
     [%Start FOO%]
 	[% START bar %]
@@ -601,6 +837,10 @@ change that in the constructor by enabling the C<greedy_chunk> option.
     [%End FOO%]
 
 =head2 Includes
+
+When a markup C<[%include bar%]> is seen, that text is replaced by the
+template of that name. See C<INCLUDE EXPANSION> for more on this.
+=head2 Include Rendering
 
 =head1 RENDERING RULES
 
@@ -611,32 +851,11 @@ unnamed top level chunk of text and it first gets its C<INCLUDE>
 markups rendered. The text then undergoes a chunk rendering and a
 scalar reference to that rendered template is returned to the caller.
 
-=head2 Include Rendering
-
-Include rendering is performed one time on a top level template. When
-it is done the template is ready for chunk rendering.  Any markup of
-the form C<[%INCLUDE name]%> will be replaced by the text found in the
-template C<name>. The template name is looked up in the object's
-template cache and if it is found there its text is used as the
-replacement.
-
-If a template is not found in the cache, it will be searched for in
-the list of directories in the C<include_paths> option. The file name
-will be a directory in that list appended with the template name and
-the C<.tmpl> suffix. The first template file found will be read in and
-stored in the cache. Its path is also saved and those will be returned
-in the C<get_dependencies> method. See the C<add_templates> and
-C<delete_templates> methods and the C<include_paths> option.
-
-Rendered include text can contain more C<INCLUDE> markups and they
-will also be rendered. The include rendering phase ends where there
-are no more C<INCLUDE> found.
-
 =head2 Chunk Rendering
 
-A chunk is the text found between C<START> and C<END> markups and it
-gets its named from the C<START> markup. The top level template is
-considered an unamed chunk and also gets chunk rendered.
+A chunk is the text found between matching C<START> and C<END> markups
+and it gets its name from the C<START> markup. The top level template
+is considered an unamed chunk and also gets chunk rendered.
 
 The data for a chunk determines how it will be rendered. The data can
 be a scalar or scalar reference or an array, hash or code
@@ -645,35 +864,9 @@ recurse down the data tree as it renders the chunks.  Each of these
 renderings are explained below. Also see the IDIOMS and BEST PRACTICES
 section for examples and used of these renderings.
 
-=head2 Scalar Data Rendering
+=over 4
 
-If the current data for a chunk is a scalar or scalar reference, the
-chunk's text in the templated is replaced by the scalar's value. This
-can be used to overwrite one default section of text with from the
-data tree.
-
-=head2 Code Data Rendering
-
-If the current data for a chunk is a code reference (also called
-anonymous sub) then the code reference is called and it is passed a
-scalar reference to the that chunk's text. The code must return a
-scalar or a scalar reference and its value replaces the chunk's text
-in the template. If the code returns any other type of data it is a
-fatal error. Code rendering is how you can do custom renderings and
-plugins. A key idiom is to use closures as the data in code renderings
-and keep the required outside data in the closure.
-
-=head2 Array Data Rendering
-
-If the current data for a chunk is an array reference do a full chunk
-rendering for each value in the array. It will replace the original
-chunk text with the joined list of rendered chunks. This is how you do
-repeated sections in Template::Simple and why there is no need for any
-loop markups. Note that this means that rendering a chunk with $data
-and [ $data ] will do the exact same thing. A value of an empty array
-C<[]> will cause the chunk to be replaced by the empty string.
-
-=head2 Hash Data Rendering
+=item Hash Data Rendering
 
 If the current data for a chunk is a hash reference then two phases of
 rendering happen, nested chunk rendering and token rendering. First
@@ -686,15 +879,12 @@ by the empty string. Otherwise the nested chunk is rendered according
 to the type of its data (see chunk rendering) and it is replaced by
 the rendered text.
 
-Chunk name and token lookup in the hash data is case sensitive (see
-the TODO for cased lookups).
+Chunk name and token lookup in the hash data is case sensitive.
 
 Note that to keep a plain text chunk or to just have the all of its
 markups (chunks and tokens) be deleted just pass in an empty hash
 reference C<{}> as the data for the chunk. It will be rendered but all
 markups will be replaced by the empty string.
-
-=head2 Token Rendering
 
 The second phase is token rendering. Markups of the form [%token%] are
 replaced by the value of the hash element with the token as the
@@ -703,308 +893,84 @@ string. This means if a token key is missing in the hash or its value
 is undefined or its value is the empty string, the [%token%] markup
 will be deleted in the rendering.
 
-=head1 IDIOMS and BEST PRACTICES
+=item Array Data Rendering
 
-With all template systems there are better ways to do things and
-Template::Simple is no different. This section will show some ways to
-handle typical template needs while using only the 4 markups in this
-module. 
+If the current data for a chunk is an array reference it will do a
+full chunk rendering for each value in the array. It will replace the
+original chunk text with the concatenated list of rendered
+chunks. This is how you do repeated sections in Template::Simple and
+why there is no need for any loop markups. Note that this means that
+rendering a chunk with $data and [ $data ] will do the exact same
+thing. A value of an empty array C<[]> will cause the chunk to be
+replaced by the empty string.
 
-=head2 Conditionals
+=item Scalar Data Rendering
 
-This conditional idiom can be when building a fresh data tree or
-modifying an existing one.
+If the current data for a chunk is a scalar or scalar reference, the
+entire chunk is replaced by the scalar's value. This can be used to
+overwrite one default section of text with from the data tree.
 
-	$href->{$chunk_name} = $keep_chunk ? {} : '' ;
+=item Code Data Rendering
 
-If you are building a fresh data tree you can use this idiom to do a
-conditional chunk:
-
-	$href->{$chunk_name} = {} if $keep_chunk ;
-
-To handle an if/else conditional use two chunks, with the else chunk's
-name prefixed with NOT_ (or use any name munging you want). Then you
-set the data for either the true chunk (just the plain name) or the
-false trunk with the NOT_ name. You can use a different name for the
-else chunk if you want but keeping the names of the if/else chunks
-related is a good idea. Here are two ways to set the if/else data. The
-first one uses the same data for both the if and else chunks and the
-second one uses different data so the it uses the full if/else code
-for that.
-
-	$href->{ ($boolean ? '' : 'NOT_') . $chunk_name} = $data
-
-	if ( $boolean ) {
-		$href->{ $chunk_name} = $true_data ;
-	else {
-		$href->{ "NOT_$chunk_name" } = $false_data ;
-	}
-
-NOTE TO ALPHA USERS: i am also thinking that a non-existing key or
-undefined hash value should leave the chunk as is. then you would need
-to explicitly replace a chunk with the empty string if you wanted it
-deleted.  It does affect the list of styles idiom. Any thoughts on
-this change of behavior? Since this hasn't been released it is the
-time to decide this.
-
-=head2 Chunked Includes
-
-One of the benefits of using include templates is the ability to share
-and reuse existing work. But if an included template has a top level
-named chunk, then that name would also be the same everywhere where
-this template is included. If a template included another template in
-multiple places, its data tree would use the same name for each and
-not allow unique data to be rendered for each include. A better way is
-to have the current template wrap an include markup in a named chunk
-markup. Then the data tree could use unique names for each included
-template. Here is how it would look:
-
-	[%START foo_prime%][%INCLUDE foo%][%START foo_prime%]
-	random noise
-	[%START foo_second%][%INCLUDE foo%][%START foo_second%]
-
-See the TODO section for some ideas on how to make this even more high level.
-
-=head2 Repeated Sections
-
-If you looked at the markup of Template::Simple you have noticed that
-there is no loop or repeat construct. That is because there is no need
-for one. Any chunk can be rendered in a loop just by having its
-rendering data be an anonymous array. The renderer will loop over each
-element of the array and do a fresh rendering of the chunk with this
-data. A join (on '') of the list of renderings replaces the original
-chunk and you have a repeated chunk.
-
-=head2 A List of Mixed Styles
-
-One formating style is to have a list of sections each which can have
-its own style or content. Template::Simple can do this very easily
-with just a 2 level nested chunk and an array of data for
-rendering. The outer chunk includes (or contains) each of the desired
-styles in any order. It looks like this:
-
-	[%START para_styles%]
-		[%START main_style%]
-			[%INCLUDE para_style_main%]
-		[%END main_style%]
-		[%START sub_style%]
-			[%INCLUDE para_style_sub%]
-		[%END sub_style%]
-		[%START footer_style%]
-			[%INCLUDE para_style_footer%]
-		[%END footer_style%]
-	[%END para_styles%]
-
-The other part to make this work is in the data tree. The data for
-para_styles should be a list of hashes. Each hash contains the data
-for one pargraph style which is keyed by the style's chunk name. Since
-the other styles's chunk names are not hash they are deleted. Only the
-style which has its name as a key in the hash is rendered. The data
-tree would look something like this:
-
-	[
-		{
-			main_style => $main_data,
-		},
-		{
-			sub_style => $sub_data,
-		},
-		{
-			sub_style => $other_sub_data,
-		},
-		{
-			footer_style => $footer_data,
-		},
-	]
-
-=head1 TESTS
-
-The test scripts use a common test driver module in t/common.pl. It is
-passed a list of hashes, each of which has the data for one test. A
-test can create a ne Template::Simple object or use the one from the
-previous test. The template source, the data tree and the expected
-results are also important keys. See the test scripts for examples of
-how to write tests using this common driver.
-
-=over 4
-
-=item name
-
-This is the name of the test and is used by Test::More
-
-=item opts
-
-This is a hash ref of the options passed to the Template::Simple
-constructor.  The object is not built if the C<keep_obj> key is set.
-
-=item keep_obj
-
-If set, this will make this test keep the Template::Simple object from
-the previous test and not build a new one.
-
-=item template
-
-This is the template to render for this test. If not set, the test
-driver will use the template from the previous test. This is useful to
-run a series of test variants with the same template.
-
-=item data
-
-This is the data tree for the rendering of the template.
-
-=item expected
-
-This is the text that is expected after the rendering.
-
-=item skip
-
-If set, this test is skipped.
+If the current data for a chunk is a code reference (also called
+anonymous sub) then the code reference is called and it is passed a
+scalar reference to the that chunk's text. The code must return a
+scalar or a scalar reference and its value replaces the chunk's text
+in the template. If the code returns any other type of data it is a
+fatal error. Code rendering is how you can do custom renderings and
+plugins. A key idiom is to use closures as the data in code renderings
+and keep the required outside data in the closure.
 
 =back
 
-=head1 TODO
-
-Even though this template system is simple, that doesn't mean it can't
-be extended in many ways. Here are some features and designs that
-would be good extensions which add useful functionality without adding
-too much complexity.
-
-=head2 Compiled Templates
-
-A commonly performed optimization in template modules is to precompile
-(really preparse) templates into a internal form that will render
-faster.  Precompiling is slower than rendering from the original
-template which means you won't want to do it for each rendering. This
-means it has a downside that you lose out when you want to render
-using templates which change often. Template::Simple makes it very
-easy to precompile as it already has the regexes to parse out the
-markup. So instead of calling subs to do actual rendering, a
-precompiler would call subs to generate a compiled rendering tree.
-The rendering tree can then be run or processes with rendering data
-passed to it. You can think of a precompiled template as having all
-the nested chunks be replaced by nested code that does the same
-rendering. It can still do the dynamic rendering of the data but it
-saves the time of parsing the template souice. There are three
-possible internal formats for the precompiled template:
+=head1 DESIGN GOALS
 
 =over 4
 
-=item Source code
+=item * High speed
 
-This precompiler will generate source code that can be stored and/or
-eval'ed.  The eval'ed top level sub can then be called and passed the
-rendering data.
+When using compiled templates T::S is one of the fastest template
+tools around. There is a benchmark script in the extras/ directory
+comparing it to Template `Toolkit and Template::Teeny
 
-=item Closure call tree
+=item * Support most common template operations
 
-The internal format can be a nested set of closures. Each closure would contain
-private data such as fixed text parts of the original template, lists
-of other closures to run, etc. It is trivial to write a basic closure
-generator which will make build this tree a simple task. 
+It can recursively include other templates, replace tokens (scalars),
+recursively render nested chunks of text and render lists. By using
+simple idioms you can get conditional renderings.
 
-=item Code ref call tree
+=item * Complete isolation of template from program code
 
-This format is a Perl data tree where the nodes have a code reference
-and its args (which can be nested instances of the same
-nodes). Instead of executing this directly, you will need a small
-interpreter to execute all the code refs as it runs through the tree.
+Template design and programming the data logic can be done by
+different people. Templates and data logic can be mixed and matched
+which improves reuse and flexibility.
 
-This would make for a challenging project to any intermediate Perl
-hacker. It just involves knowing recursion, data trees and code refs.
-Contact me if you are interested in doing this.
+=item * Very simple template markup (only 4 markups)
+
+The only markups are C<INCLUDE>, C<START>, C<END> and C<token>. See
+MARKUP for more.
+
+=item * Easy to follow rendering rules
+
+Rendering of templates and chunks is driven from a data tree. The type
+of the data element used in an rendering controls how the rendering
+happens.  The data element can be a scalar, scalar reference, or an
+array, hash or code reference.
+
+=item * Efficient template rendering
+
+Rendering is very simple and uses Perl's regular expressions
+efficiently. Because the markup is so simple less processing is needed
+than many other templaters. You can precompile templates for even
+faster rendering but with some minor restrictions in flexibility
+
+=item * Easy user extensions
+
+User code can be called during an rendering so you can do custom
+renderings and plugins. Closures can be used so the code can have its
+own private data for use in rendering its template chunk.
 
 =back
-
-=head2 Cased Hash Lookups
-
-One possible option is to allow hash renderings to always use upper or
-lower cased keys in their lookups.
-
-=head2 Render tokens before includes and chunks
-
-Currently tokens are rendered after includes and chunks. If tokens
-were rendered in a pass before the others, the include and chunk names
-could be dynamically set. This would make it harder to precompile
-templates as too much would be dynamic, i.e. you won't know what the
-fixed text to parse out is since anything can be included at render
-time. But the extra flexibility of changing the include and chunk
-names would be interesting. It could be done easily and enabled by an
-option.
-
-=head2 Plugins
-
-There are two different potential areas in Template::Simple that could
-use plugins. The first is with the rendering of chunkas and
-dispatching based on the data type. This dispatch table can easily be
-replaced by loaded modules which offer a different way to
-render. These include the precompiled renderers mentioned above. The
-other area is with code references as the data type. By defining a
-closure (or a closure making) API you can create different code refs
-for the rendering data. The range of plugins is endless some of the
-major template modules have noticed. One idea is to make a closure
-which contains a different Template::Simple object than the current
-one. This will allow rendering of a nested chunk with different rules
-than the current chunk being rendered.
-
-=head2 Data Escaping
-
-Some templaters have options to properly escape data for some types of
-text files such as html. this can be done with some variant of the
-_render_hash routine which also does the scalar rendering (which is
-where data is rendered). The rendering scalars code could be factored
-out into a set of subs one of which is used based on any escaping
-needs.
-
-=head2 Data Tree is an Object
-
-This is a concept I don't like but it was requested so it goes into
-the TODO file. Currently C<render> can only be passed a regular
-(unblessed) ref (or a scalar) for its data tree. Passing in an object
-would break encapsulation and force the object layout to be a hash
-tree that matches the layout of the template. I doubt that most
-objects will want to be organized to match a template. I have two
-ideas, one is that you add a method to that object that builds up a
-proper (unblessed) data tree to pass to C<render>. The other is by
-subclassing C<Template::Simple> and overriding C<render> with a sub
-that does take an object hash and it can unbless it or build a proper
-data tree and then call C<render> in SUPER::. A quick solution is to
-use C<reftype> (from Scalar::Utils) instead of C<ref> to allow object
-hashes to be passed in.
-
-=head2 Includes and Closure Synergy
-
-By pairing up an include template along with code that can generate
-the appropriate data tree for its rendering, you can create a higher
-level template framework (the synergy). Additional code can be
-associated with them that will handle input processing and
-verification for the templates (e.g. web forms) that need it. A key to
-this will be making all the closures for the data tree. This can be
-greatly simplified by using a closure maker sub that can create all
-the required closures.
-
-=head2 Metafields and UI Generation
-
-Taking the synergy up to a much higher level is the concept of meta
-knowledge of fields which can generate templates, output processing
-(data tree generation), input processing, DB backing and more. If you
-want to discuss such grandiose wacky application schemes in a long
-rambling mind bending conversation, please contact me.
-
-=head2 More Examples and Idioms
-
-As I convert several scripts over to this module (they all used the
-hack version), I will add them to an examples section or possibly put
-them in another (pod only) module. Similarly the Idioms section needs
-rendering and could be also put into a pod module. One goal requested
-by an early alpha tester is to keep the primary docs as simple as the
-markup itself. This means moving all the extra stuff (and plenty of
-that) into other pod modules. All the pod modules would be in the same
-cpan tarball so you get all the docs and examples when you install
-this.
-
-=head1 AUTHOR
-
-Uri Guttman, C<< <uri at sysarch.com> >>
 
 =head1 BUGS
 
@@ -1013,14 +979,6 @@ C<bug-template-simple at rt.cpan.org>, or through the web interface at
 L<http://rt.cpan.org/NoAuth/ReportBug.html?Queue=Template-Simple>.
 I will be notified, and then you'll automatically be notified of progress on
 your bug as I make changes.
-
-=head1 SUPPORT
-
-You can find documentation for this module with the perldoc command.
-
-    perldoc Template::Simple
-
-You can also look for information at:
 
 =over 4
 
@@ -1038,31 +996,21 @@ L<http://search.cpan.org/dist/Template-Simple>
 
 I wish to thank Turbo10 for their support in developing this module.
 
-=head1 COPYRIGHT & LICENSE
+=head2 LICENSE
 
-Copyright 2006 Uri Guttman, all rights reserved.
+  Same as Perl.
 
-This program is free software; you can redistribute it and/or modify it
-under the same terms as Perl itself.
+=head1 COPYRIGHT
+
+Copyright 2011 Uri Guttman, all rights reserved.
+
+=head2 SEE ALSO
+
+An article on file slurping in extras/slurp_article.pod. There is
+also a benchmarking script in extras/slurp_bench.pl.
+
+=head1 AUTHOR
+
+Uri Guttman, E<lt>uri@stemsystems.comE<gt>
 
 =cut
-
-
-find templates and tests
-
-deep nesting tests
-
-greedy tests
-
-methods pod
-
-delete_templates test
-
-pod cleanup
-
-fine edit
-
-more tests
-
-slurp dependency in makefile.pl
-

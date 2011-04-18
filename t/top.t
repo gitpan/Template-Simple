@@ -43,6 +43,7 @@ EXPECTED
 	},
 	{
 		name	=> 'top level - code data',
+		compile_skip	=> 1,
 		data	=> sub { \uc ${$_[0]} },
 		template => <<TEMPLATE,
 junk

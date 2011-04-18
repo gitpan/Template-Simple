@@ -1,5 +1,15 @@
 Revision history for Template-Simple
 
+0.03    Sun Apr  3 04:11:04 EDT 2011
+      - Added support for compiled templates
+      - Added support to test regular and compiled templates
+      - Improved shared test driver t/common.pm
+      - include_paths constructor option now called template_paths
+	include_paths is still supported but deprecated
+      - Major edits and cleanup of pod
+      - Created extras/cookbook.pl with runnable T::S examples and pod
+      - Added extras/bench_all.pl which benchmarks several templaters
+
 0.02    Tue Oct 17 02:08:28 EDT 2006
       - Fixed bug with nested hashes being rendered. Added nested.t to
 	the tests.
@@ -7,5 +17,3 @@ Revision history for Template-Simple
 
 0.01    Sun Aug 27 00:07:13 EDT 2006
         First release
-
-

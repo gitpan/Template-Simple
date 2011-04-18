@@ -26,12 +26,10 @@ BAR
 ) ;
 
 my $tests = [
-
 	{
 		name	=> 'simple include',
 		skip	=> 0,
 		opts	=> {
-
 			templates => {
 				'foo'	=> 'bar',
 			}
@@ -67,7 +65,6 @@ my $tests = [
 		template => '[%INCLUDE foo%] [%INCLUDE bar%] [%INCLUDE quux%]',
 		expected => 'foo is here bar is too quux is on the drums',
 	},
-
 	{
 		name	=> 'missing include',
 		skip	=> 0,
@@ -76,7 +73,6 @@ my $tests = [
 		pretest	=> sub { $_[0]{obj}->delete_templates() },
 		error	=> qr/can't find/,
 	},
-
 	{
 		name	=> 'load include files',
 		skip	=> 0,
@@ -122,6 +118,8 @@ EXPECTED
 			) ],
 		},
 		pretest	=> sub { unlink 'templates/deeper/BAR.tmpl' },
+		posttest => sub { write_tmpl_files() },
+
 		data	=> {},
 		expected => <<EXPECTED,
 this loads bar <[this should be hidden then revealed]
@@ -136,7 +134,7 @@ write_tmpl_files() ;
 
 template_tester( $tests ) ;
 
-#remove_tmpl_files() ;
+remove_tmpl_files() ;
 
 exit ;
 
@@ -154,6 +152,5 @@ sub write_tmpl_files {
 sub remove_tmpl_files {
 
 	unlink keys %tmpl_files ;
-	
 	rmdir $_ for reverse @tmpl_dirs ;
 }

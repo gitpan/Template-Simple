@@ -3,6 +3,9 @@ MANIFEST
 META.yml # Will be created by "make dist"
 Makefile.PL
 README
+TODO
+extras/cookbook.pl
+extras/bench_all.pl
 lib/Template/Simple.pm
 t/00-load.t
 t/boilerplate.t
