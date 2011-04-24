@@ -5,10 +5,10 @@ use strict ;
 
 use Carp ;
 use Data::Dumper ;
-use Scalar::Util qw( reftype ) ;
+use Scalar::Util qw( reftype blessed ) ;
 use File::Slurp ;
 
-our $VERSION = '0.03';
+our $VERSION = '0.04';
 
 my %opt_defaults = (
 
@@ -28,16 +28,15 @@ sub new {
 
 # get all the options or defaults into the object
 
+# support the old name 'include_paths' ;
+
+	$opts{search_dirs} ||= delete $opts{include_paths} ;
+
 	while( my( $name, $default ) = each %opt_defaults ) {
 
 		$self->{$name} = defined( $opts{$name} ) ? 
 				$opts{$name} : $default ;
 	}
-
-# support the old name 'include_paths' ;
-
-	$self->{search_dirs} = $self->{include_paths} if
-		$self->{include_paths} ;
 
 	croak "search_dirs is not an ARRAY reference" unless
 		ref $self->{search_dirs} eq 'ARRAY' ;
@@ -354,11 +353,29 @@ sub _render_chunk {
 
 	return \'' unless defined $data ;
 
+# get the type of this data. handle blessed types
+
+	my $reftype = blessed( $data ) ;
+
+#print "REF $reftype\n" ;
+
+# handle the case of a qr// which blessed returns as Regexp
+
+	if ( $reftype ) {
+
+		$reftype = reftype $data unless $reftype eq 'Regexp' ;
+	}
+	else {
+		$reftype = ref $data ;
+	}
+
+#print "REF2 $reftype\n" ;
+
 # now render this chunk based on the type of data
 
-	my $renderer = $renderers{reftype $data || ''} ;
+	my $renderer = $renderers{ $reftype || ''} ;
 
-#print "EXP $renderer\nREF ", reftype $data, "\n" ;
+#print "EXP $renderer\nREF $reftype\n" ;
 
 	croak "unknown template data type '$data'\n" unless defined $renderer ;
 

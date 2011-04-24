@@ -5,7 +5,7 @@ use common ;
 
 my $tests = [
 	{
-		name	=> 'unknown data type',
+		name	=> 'unknown template data type',
 		compile_skip	=> 1,
 		opts	=> {},
 		data	=> qr//,

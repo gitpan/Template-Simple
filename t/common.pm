@@ -21,6 +21,8 @@ sub template_tester {
 
 		foreach my $test ( @{$tests} ) {
 
+			$test->{name} .= ' - compiled' if $compiled ;
+
 			if ( $test->{skip} ) {
 				ok( 1, "SKIPPING $test->{name}" ) ;
 				next ;
@@ -68,7 +70,6 @@ print $@ if $@ ;
 
 				my $tmpl_name = 'test' ;
 				$obj->add_templates( {$tmpl_name => $tmpl} ) ;
-				$test->{name} .= ' - compiled' ;
 				eval { $obj->compile( $tmpl_name ) } ;
 #print "ERR $@\n" ;
 

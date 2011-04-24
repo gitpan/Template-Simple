@@ -77,7 +77,7 @@ my $tests = [
 		name	=> 'load include files',
 		skip	=> 0,
 		opts	=> {
-			include_paths => [ qw(
+			search_dirs => [ qw(
 				templates
 				templates/deeper
 				templates/deeper/deepest
@@ -111,7 +111,7 @@ EXPECTED
 		name	=> 'delete covering file',
 		skip	=> 0,
 		opts	=> {
-			include_paths => [ qw(
+			search_dirs => [ qw(
 				templates
 				templates/deeper
 				templates/deeper/deepest
@@ -134,7 +134,7 @@ write_tmpl_files() ;
 
 template_tester( $tests ) ;
 
-remove_tmpl_files() ;
+#remove_tmpl_files() ;
 
 exit ;
 

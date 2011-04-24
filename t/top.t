@@ -6,7 +6,7 @@ use common ;
 my $tests = [
 
 	{
-		name	=> 'top level - scalar data',
+		name	=> 'scalar data',
 		data	=> 'bar',
 		template => <<TEMPLATE,
 junk
@@ -14,7 +14,7 @@ TEMPLATE
 		expected => 'bar',
 	},
 	{
-		name	=> 'top level - array data',
+		name	=> 'array data',
 		data	=> [
 			"foo\n",
 			"bar\n",
@@ -28,7 +28,7 @@ bar
 EXPECTED
 	},
 	{
-		name	=> 'top level - blessed array data',
+		name	=> 'blessed array data',
 		data	=> bless( [
 			"foo\n",
 			"bar\n",
@@ -42,7 +42,7 @@ bar
 EXPECTED
 	},
 	{
-		name	=> 'top level - code data',
+		name	=> 'code data',
 		compile_skip	=> 1,
 		data	=> sub { \uc ${$_[0]} },
 		template => <<TEMPLATE,
