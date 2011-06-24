@@ -8,7 +8,7 @@ use Data::Dumper ;
 use Scalar::Util qw( reftype blessed ) ;
 use File::Slurp ;
 
-our $VERSION = '0.04';
+our $VERSION = '0.05';
 
 my %opt_defaults = (
 
@@ -457,8 +457,15 @@ sub add_templates {
 # copy all the templates from the arg hash and force the values to be
 # scalar refs
 
-	@{ $self->{tmpl_cache}}{ keys %{$tmpls} } =
-		map ref $_ eq 'SCALAR' ? \"${$_}" : \"$_", values %{$tmpls} ;
+	while( my( $name, $tmpl ) = each %{$tmpls} ) {
+
+		defined $tmpl or croak "undefined template value for '$name'" ;
+
+# cache the a scalar ref of the template
+
+		$self->{tmpl_cache}{$name} = ref $tmpl eq 'SCALAR' ?
+			\"${$tmpl}" : \"$tmpl"
+	}
 
 #print Dumper $self->{tmpl_cache} ;
 
@@ -603,7 +610,7 @@ TMPL
 
   # here we add the template to the cache and give it a name
 
-    $tmpl->add_template( demo => $template_text ) ;
+    $tmpl->add_templates( { demo => $template_text } ) ;
 
   # this compiles and then renders that template with the same data
   # but is much faster

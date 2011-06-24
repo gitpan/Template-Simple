@@ -1,124 +1,381 @@
-#!/usr/bin/env perl
+#!/usr/bin/perl
 
-use strict;
-use warnings;
+use lib '../lib' ;
+use lib 'lib' ;
 
-use Template::Teeny;
-use Template::Simple;
-use Template::Teeny::Stash;
-use Template;
+use warnings ;
+use strict ;
 
-my $iter = shift || -2 ;
+use Data::Dumper ;
 
+use Getopt::Long ;
+use File::Slurp ;
 use Benchmark qw(:hireswallclock cmpthese);
-basic: {
 
-    my $ts = Template::Simple->new() ;
-	$ts->add_templates( { bench => 'hehe [% name %]' } ) ;
+my $opts = parse_options() ;
 
-    my $tsc = Template::Simple->new() ;
-	$tsc->add_templates( { bench => 'hehe [% name %]' } ) ;
-	$tsc->compile( 'bench' ) ;
-
-    my $tt = Template::Teeny->new({ include_path => ['t/tpl'] });
-    my $stash = Template::Teeny::Stash->new({ name => 'bob' });
-
-    my $t = Template->new({ INCLUDE_PATH => 't/tpl', COMPILE_EXT => '.tc' });
-    my $out;
-      open my $fh, '>/dev/null';
-
-    $tt->process('bench.tpl', $stash, $fh);
-    $t->process('bench.tpl', { name => 'bob' }, $fh);
-
-    sub teeny {
-        $tt->process('bench.tpl', $stash, $fh);
-    }
-    sub plain {
-        $t->process('bench.tpl', { name => 'bob' }, $fh);    
-    }
-
-    sub simple {
-        $ts->render('bench', { name => 'bob' } );    
-    }
-
-    sub ts_compiled {
-        $tsc->render('bench', { name => 'bob' } );    
-    }
-
-    print "Very simple interpolation:\n";
-    cmpthese( $iter, { teeny => \&teeny, template_toolkit => \&plain,
-			simple => \&simple, ts_compiled => \&ts_compiled }) ;
-}
-
-some_looping_etc: {
-
-my $tmpl = <<TMPL ;
+my $template_info = [
+	{
+		name	=> 'basic',
+		data	=> {
+			name	=> 'bob',
+		},
+		expected => 'hehe bob',
+		simple	=> 'hehe [% name %]',
+		toolkit	=> 'hehe [% name %]',
+		teeny	=> 'hehe [% name %]',
+		tiny	=> 'hehe [% name %]',
+	},
+	{
+		name	=> 'nested',
+		data	=> {
+			title	=> 'Bobs Blog',
+			posts	=> [
+				{
+					title	=> 'hehe',
+					date	=> 'Today'
+				},
+				{
+					title	=> 'Something new',
+					date	=> '3 Days ago',
+				},
+			],
+		},
+		expected => <<EXPECTED,
 <html>
-  <head><title>[% title %]</title></head>
+  <head><title>Bobs Blog</title></head>
   <body>
     <ul>
-      [% SECTION post %]
         <li>
-            <h3>[% title %]</h3>
-            <span>[% date %]</span>
+            <h3>hehe</h3>
+            <span>Today</span>
         </li>
-      [% END %]
+        <li>
+            <h3>Something new</h3>
+            <span>3 Days ago</span>
+        </li>
     </ul>
   </body>
 </html>
-TMPL
+EXPECTED
 
-    my $ts = Template::Simple->new() ;
-	$ts->add_templates( { bench2 => $tmpl } ) ;
+		simple	=> <<SIMPLE,
+<html>
+  <head><title>[% title %]</title></head>
+  <body>
+    <ul>[% START posts %]
+        <li>
+            <h3>[% title %]</h3>
+            <span>[% date %]</span>
+        </li>[% END posts %]
+    </ul>
+  </body>
+</html>
+SIMPLE
 
-    my $tsc = Template::Simple->new() ;
-	$tsc->add_templates( { bench2 => $tmpl } ) ;
-	$tsc->compile( 'bench2' ) ;
+		toolkit	=> <<TOOLKIT,
+<html>
+  <head><title>[% title %]</title></head>
+  <body>
+    <ul>[% FOREACH post = posts %]
+        <li>
+            <h3>[% post.title %]</h3>
+            <span>[% post.date %]</span>
+        </li>[% END %]
+    </ul>
+  </body>
+</html>
+TOOLKIT
 
-    my $tt = Template::Teeny->new({ include_path => ['t/tpl'] });
-    my $stash = Template::Teeny::Stash->new({ title => q{Bobs Blog} });
+		tiny	=> <<TINY,
+<html>
+  <head><title>[% title %]</title></head>
+  <body>
+    <ul>[% FOREACH post IN posts %]
+        <li>
+            <h3>[% post.title %]</h3>
+            <span>[% post.date %]</span>
+        </li>[% END %]
+    </ul>
+  </body>
+</html>
+TINY
 
-    my $post1 = Template::Teeny::Stash->new({ date => 'Today', title => 'hehe' });
-    my $post2 = Template::Teeny::Stash->new({ date => '3 Days ago', title => 'Something new' });
-    $stash->add_section('post', $post1);
-    $stash->add_section('post', $post2);
+		teeny	=> <<TEENY,
+<html>
+  <head><title>[% title %]</title></head>
+  <body>
+    <ul>[% SECTION post %]
+        <li>
+            <h3>[% title %]</h3>
+            <span>[% date %]</span>
+        </li>[% END %]
+    </ul>
+  </body>
+</html>
 
-    my $t = Template->new({ INCLUDE_PATH => 't/tpl', COMPILE_EXT => '.tc' });
-    my $out;
-     open my $fh, '>/dev/null';
+TEENY
+	},
+] ;
 
-    my $tt_vars = { 
-        title => 'Bobs Blog', 
-        posts => [
-            { title => 'hehe', date => 'Today' },
-            { date => '3 Days ago', title => 'Something new' },
-        ],
-    };
-    teeny2();
-   plain2();
+my $benches = [
+	{
+		name	=> 'T::S',
+		template_key => 'simple',
+		load	=> sub {
+			return eval { require Template::Simple } ;
+		},
+		setup	=> sub {
+			my( $bench, $info ) = @_ ;
 
-    sub teeny2 {
-        $tt->process('bench2-teeny.tpl', $stash, $fh);
-    }
-    sub plain2 {
-        $t->process('bench2-tt.tpl', $tt_vars, $fh);    
-    }
+			my $template = $info->{$bench->{template_key}} ;
+			my $data = $info->{data} ;
+			my $name = $info->{name} ;
 
-    sub simple2 {
-        $ts->render('bench2', $tt_vars );    
-    }
+			my $obj = Template::Simple->new(
+				templates => { $name => $template }
+			) ;
 
-    sub ts_compiled2 {
-        $tsc->render('bench2', $tt_vars );    
-    }
+			$bench->{render} =
+				sub { $obj->render( $name, $data ) } ;
+		},
+		verify	=> sub {
+			my( $bench, $info ) = @_ ;
+			my $result = $bench->{render}->() ;
+			$bench->{result} = ${$result} ;
+		},
+	},
+	{
+		name	=> 'T::S compiled',
+		template_key => 'simple',
+		load	=> sub {
+			return eval { require Template::Simple } ;
+		},
+		setup	=> sub {
+			my( $bench, $info ) = @_ ;
 
-    print "\nLoop and interpolation:\n";
+			my $template = $info->{$bench->{template_key}} ;
+			my $data = $info->{data} ;
+			my $name = $info->{name} ;
 
-    cmpthese( $iter, { teeny => \&teeny2, template_toolkit => \&plain2,
-			simple => \&simple2, ts_compiled => \&ts_compiled2 }) ;
+			my $obj = Template::Simple->new(
+				templates => { $name => $template }
+			) ;
+			$obj->compile( $name ) ;
 
+			$bench->{render} =
+				sub { $obj->render( $name, $data ) } ;
+		},
+		verify	=> sub {
+			my( $bench, $info ) = @_ ;
+			my $result = $bench->{render}->() ;
+			$bench->{result} = ${$result} ;
+		},
+	},
+	{
+		name	=> 'Teeny',
+		template_key => 'teeny',
+		load	=> sub {
+			return eval {
+				require Template::Teeny ;
+				require Template::Teeny::Stash ;
+			} ;
+		},
+		setup	=> sub {
+			my( $bench, $info ) = @_ ;
+
+			my $template = $info->{$bench->{template_key}} ;
+			my $data = $info->{data} ;
+			my $name = $info->{name} ;
+
+			my $results ;
+#			open my $fh, '>', \$results or
+#			open my $fh, '>', '/dev/null' or
+#				die "can't open string for output" ;
+
+			mkdir 'tpl' ;
+			write_file( "tpl/$name.tpl", $template ) ;
+			my $obj = Template::Teeny->new(
+				{ include_path => ['tpl'] }
+			) ;
+
+			my $stash ;
+			if ( my $posts = $data->{posts} ) {
+			
+				$stash = Template::Teeny::Stash->new(
+					{ title => $data->{title} }
+				) ;
+
+				foreach my $post ( @{$posts} ) {
+
+					my $substash =
+						Template::Teeny::Stash->new(
+							$post
+					) ;
+					$stash->add_section('post', $substash );
+				}
+			}
+			else {
+				$stash = Template::Teeny::Stash->new(
+					$data
+				) ;
+
+			}
+
+#print Dumper $stash ;
+			$bench->{render} =
+				sub { $obj->process("$name.tpl", $stash ); }
+
+		},
+		verify	=> sub {
+			my( $bench, $info ) = @_ ;
+			$bench->{result} = $bench->{render}->() ;
+		},
+	},
+	{
+		name	=> 'toolkit',
+		template_key => 'toolkit',
+		load	=> sub { return eval { require Template } ; },
+		setup	=> sub {
+			my( $bench, $info ) = @_ ;
+
+			my $template = $info->{$bench->{template_key}} ;
+			my $data = $info->{data} ;
+
+			my $obj = Template->new() ;
+
+			$bench->{render} = sub {
+				my $output ;
+				$obj->process(\$template, $data, \$output );
+				return $output ;
+			},
+
+		},
+		verify	=> sub {
+			my( $bench, $info ) = @_ ;
+			$bench->{result} = $bench->{render}->() ;
+		},
+	},
+	{
+		name	=> 'tiny',
+		template_key => 'tiny',
+		load	=> sub { return eval { require Template::Tiny } ; },
+		setup	=> sub {
+			my( $bench, $info ) = @_ ;
+
+			my $template = $info->{$bench->{template_key}} ;
+			my $data = $info->{data} ;
+
+			my $obj = Template::Tiny->new() ;
+
+			$bench->{render} = sub {
+				my $output ;
+				$obj->process( \$template, $data, \$output );
+				return $output ;
+			},
+		},
+		verify	=> sub {
+			my( $bench, $info ) = @_ ;
+			$bench->{result} = $bench->{render}->() ;
+		},
+	},
+] ;
+
+run_benchmarks() ;
+
+sub run_benchmarks {
+
+	foreach my $info ( @{$template_info} ) {
+
+		my %compares ;
+
+		foreach my $bench ( @{$benches} ) {
+
+			my $loaded = $bench->{load}->() ;
+			unless( $loaded ) {
+				print <<BAD ;
+Skipping $bench->{name} as it didn't load
+BAD
+				next ;
+			}
+
+			$bench->{setup}->( $bench, $info ) ;
+
+			if ( $opts->{verify} ) {
+				$bench->{verify}->( $bench, $info ) ;
+
+				if ( $bench->{result} ne $info->{expected} ) {
+
+					print <<BAD ;
+Skipping $bench->{name} as it doesn't have verified results.
+RESULT [$bench->{result}]\nEXPECTED [$info->{expected}]
+BAD
+					next ;
+				}
+				else {
+					print <<GOOD ;
+'$bench->{name}' rendering of '$info->{name}' is verified
+GOOD
+				}
+			}
+
+			$compares{ $bench->{name} } = $bench->{render} ;
+		}
+
+		print "\nBenchmark of '$info->{name}' template\n" ;
+		cmpthese( $opts->{iterations}, \%compares ) ;
+		print "\n" ;
+	}
 }
 
+sub parse_options {
 
+	GetOptions( \my %opts,
+		'verify|v',
+		'iterations|i',
+		'templaters|t',
+		'help|?',
+	) ;
 
+	usage( '' ) if $opts{ 'help' } ;
 
+	$opts{iterations} ||= -2 ;
+
+	$opts{templaters} = [split /,/, $opts{templaters}]
+		if $opts{templaters} ;
+
+	return \%opts ;
+}
+
+sub usage {
+
+	my $err_msg = shift || '' ;
+
+	my $usage = <<'=cut' ;
+
+bench_templates.pl - Benchmark Multiple Templaters
+
+=head1 SYNOPSIS
+
+load_menus.pl [--verify | -v] [--iterations | -i <iter>]
+	[--templaters| -t <templaters>] [--help]
+
+=head1 DESCRIPTION
+
+	--verify | -v			Verify rendered output is correct
+	--iterations | -i <iter>	Iteration count passed to cmpthese
+					Default is -2 (seconds of cpu time)
+	--templaters | -t <templaters>	Comma separated list of templaters
+					to run in this benchmark
+
+	[--help | ?]			Print this help text
+
+=cut
+
+	$usage =~ s/^=\w+.*$//mg ;
+
+	$usage =~ s/\n{2,}/\n\n/g ;
+	$usage =~ s/\A\n+// ;
+
+	die "$err_msg\n$usage" ;
+}

@@ -1,5 +1,16 @@
 Revision history for Template-Simple
 
+0.05	Sun Apr 24 00:27:10 EDT 2011
+      - Updated Changes file
+      - Added handling of undef templates
+      - Added new benchmark in extras/bench_all.pl
+0.05	Fri Jun 24 14:22:58 EDT 2011
+	Wrote new benchmark script in extras/
+	Added to distro modified Template::Teeny for benchmark
+
+0.04    Sun Apr 24 00:27:10 EDT 2011
+      - Fixed bugs in tests (introduced in 0.03)
+
 0.03    Sun Apr  3 04:11:04 EDT 2011
       - Added support for compiled templates
       - Added support to test regular and compiled templates
