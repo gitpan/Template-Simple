@@ -175,6 +175,24 @@ foo
 [%END FOO%]
 EXPECTED
 	},
+	{
+		name	=> 'token_re',
+		opts	=> {
+			token_re => qw/[-\w]+?/,
+		},
+		data	=> {
+			'foo-bar'	=> 'FOO is 3',
+			'BAR-BAZ'	=> 'bar is baz',
+		},
+		template => <<TEMPLATE,
+[%foo-bar%]
+[%BAR-BAZ%]
+TEMPLATE
+		expected => <<EXPECTED,
+FOO is 3
+bar is baz
+EXPECTED
+	},
 ] ;
 
 template_tester( $tests ) ;

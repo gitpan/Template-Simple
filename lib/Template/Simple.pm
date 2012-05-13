@@ -8,12 +8,13 @@ use Data::Dumper ;
 use Scalar::Util qw( reftype blessed ) ;
 use File::Slurp ;
 
-our $VERSION = '0.05';
+our $VERSION = '0.06';
 
 my %opt_defaults = (
 
 	pre_delim	=> qr/\[%/,
 	post_delim	=> qr/%\]/,
+	token_re	=> qr/\w+?/,
 	greedy_chunk	=> 0,
 #	upper_case	=> 0,
 #	lower_case	=> 0,
@@ -48,7 +49,7 @@ sub new {
 	$self->{scalar_re} = qr{
 		$self->{pre_delim}
 		\s*			# optional leading whitespace
-		(\w+?)			# grab scalar name
+		($self->{token_re})	# grab scalar name
 		\s*			# optional trailing whitespace
 		$self->{post_delim}
 	}xi ;				# case insensitive
@@ -66,7 +67,7 @@ sub new {
 		\s*			# optional leading whitespace
 		START			# required START token
 		\s+			# required whitespace
-		(\w+?)			# grab the chunk name
+		($self->{token_re})	# grab the chunk name
 		\s*			# optional trailing whitespace
 		$self->{post_delim}
 		($chunk_body)		# grab the chunk body
@@ -88,7 +89,7 @@ sub new {
 		\s*			# optional leading whitespace
 		INCLUDE			# required INCLUDE token
 		\s+			# required whitespace
-		(\w+?)			# grab the included template name
+		($self->{token_re})	# grab the included template name
 		\s*			# optional trailing whitespace
 		$self->{post_delim}
 	}xi ;				# case insensitive
@@ -663,6 +664,22 @@ chars. The default is qr/%]/.
 
 	my $rendered = $tmpl->render( '[%FOO%>', 'bar' ) ;
 
+=head2  token_re
+
+This option overrides the regular expression that is used match a
+token or name in the markup. It should be a qr// and you may need to
+escape (with \Q or \) any regex metachars if you want them to be plain
+chars. The default is qr/\w+?/.
+
+	my $tmpl = Template::Simple->new(
+		token_re => qr/[\w-]+?/,
+	);
+
+	my $rendered = $tmpl->render(
+		'[% id-with-hyphens %]',
+		{ 'id-with-hyphens' => 'bar' }
+	) ;
+
 =head2	greedy_chunk
 
 This boolean option will cause the regex that grabs a chunk of text
@@ -715,7 +732,7 @@ template text to be rendered. A scalar template argument is first
 assumed to be a template name which is searched for in the template
 cache and the compiled template caches. If found in there it is used
 as the template. If not found there, it is searched for in the
-directories of the C<include_paths>. Finally if not found, it will be
+directories of the C<search_dirs>. Finally if not found, it will be
 used as the template text.
 
 The data tree argument can be any value allowed by Template::Simple
@@ -831,7 +848,9 @@ and C<post_delim> options in the C<new()> constructor.
 A token is a single markup with a C<\w+> Perl word inside. The token
 can have optional whitespace before and after it. A token is replaced
 by a value looked up in a hash with the token as the key. The hash
-lookup keeps the same case as parsed from the token markup.
+lookup keeps the same case as parsed from the token markup. You can
+override the regular expression used to match a token with the
+C<token_re> option.
 
     [% foo %] [%BAR%]
 
@@ -844,7 +863,7 @@ parsed out during hash data rendering so see Hash Data for more.
 Chunks are regions of text in a template that are marked off with a
 start and end markers with the same name. A chunk start marker is
 C<[%START name%]> and the end marker for that chunk is C<[%END
-name%]>. C<name> is a C<\w+> Perl word which is the name of this
+name%]>. C<name> is matched with C<\w+?> and that is the name of this
 chunk. The whitespace between C<START/END> and C<name> is required and
 there is optional whitespace before C<START/END> and after the
 C<name>. C<START/END> are case insensitive but the C<name>'s case is
@@ -852,7 +871,8 @@ kept.  Chunks are the primary way to markup templates for structures
 (sets of tokens), nesting (hashes of hashes), repeats (array
 references) and callbacks to user code.  By default a chunk will be a
 non-greedy grab but you can change that in the constructor by enabling
-the C<greedy_chunk> option.
+the C<greedy_chunk> option.  You can override the regular expression
+used to match the chunk name with the C<token_re> option.
 
     [%Start FOO%]
 	[% START bar %]
@@ -862,9 +882,12 @@ the C<greedy_chunk> option.
 
 =head2 Includes
 
-When a markup C<[%include bar%]> is seen, that text is replaced by the
-template of that name. See C<INCLUDE EXPANSION> for more on this.
-=head2 Include Rendering
+When a markup C<[%include name%]> is seen, that text is replaced by
+the template of that name. C<name> is matched with C<\w+?> which is
+the name of the template. You can override the regular expression used
+to match the include C<name> with the C<token_re> option.
+
+See C<INCLUDE EXPANSION> for more on this.
 
 =head1 RENDERING RULES
 
@@ -874,6 +897,12 @@ and chunk rendering. In the C<render> method, the template is an
 unnamed top level chunk of text and it first gets its C<INCLUDE>
 markups rendered. The text then undergoes a chunk rendering and a
 scalar reference to that rendered template is returned to the caller.
+
+=head2 Include Rendering
+
+All include file rendering happens before any other rendering is
+done. After this phase, the rendered template will not have
+C<[%include name%]> markups in it.
 
 =head2 Chunk Rendering
 
